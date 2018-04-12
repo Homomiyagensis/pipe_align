@@ -1,0 +1,1615 @@
+QC_alignment#!/usr/bin/env bash
+set -e
+################################################################################
+                              #pipe_align
+          #Pipeline for Transcriptome assembly and Expression Analysis
+                    #based on illumina RNA-seq reads
+################################################################################
+
+#setting commas as decimals while the shell script is running
+export LC_ALL="en_US.UTF-8"
+#number of threads set by default when program argument is able
+#the number of threads is set to number of threads avialable minus 2
+t=$(lscpu|awk 'NR==4{print $2-2}')
+
+################################################################################
+#Function usage
+################################################################################
+function usage {
+    echo -e "pipe_align 0.1"
+    echo -e "\nusage:\tpipe_align [args] skip [values]"
+    echo -e "\nwhere arguments -args- can be:"
+    echo -e "\n\t-t\tPass the input table to pipe_align.\n\t\tWhere the first column must have the sra RUN code.\n\t\t\
+The second column must have the library layout,and\n\t\tthe third column the read size. It must be provided."
+    echo -e "\t-w\tFull path to an existing working directory.\n\t\tThe directory must be already created with mkdir."
+    echo -e "\t-p\tProject name. It must be provided."
+    echo -e "\t-P\tNumber of [sra|fastq] files that will be downloaded in parallel"
+    echo -e "\t-G\tFull path to fasta file of genome to be used at the read aligning step.\
+\n\t\tIt must be provided."
+    echo -e "\t-g\tFull path to gtf file with genomic coordinate information of\
+\n\t\tgenomic features. The gtf  file must be compatible with the provided\
+ genome (same chromosome names). It must be provided."
+    echo -e "\t-b\tFull path to bed file with genomic coordinate information of\
+\n\t\tgenomic features. The bed file must be compatible with the provided\
+\n\t\tgenome (same Chromosome names). It must be provided."
+    echo -e "\t-i\tFull path to star index directory, that must be builded using\n\t\t\
+the provided genome. If star index directory is provided, the star index build step will be skipped."
+    echo -e "\t-s\tFull path to directory of sra files, where sra will be read from\n\t\t\
+or download to. If it is not provided a directory will be create in the working directory."
+    echo -e "\t-f\tFull path to directory of fastq files;where fastq files will be read out\n\t\t\
+or download to. If it is not provided a directory will be created in the working directory."
+    echo -e "\t-m\tFull path to directory of trimmed_files, where trimmed files will be read from\n\t\t\
+or download to. If it is not provided a directory will be created in the workinng directory"
+    echo -e "\t-r\tAlignment step will run using pipe_align untrimmed fastq files.\n\t\tOr \
+directory provided by -f.Raw alignment is not set as default."
+    echo -e "\t-F\tFull path to gtf file, from which attributes will be extracted and added to gtf used for star index genome building.\n\t\t\
+It must have the same transcript_id and gene_id attributes as the gtf file provided for star index building."
+    echo -e "\t-T\tNumber of threads used for running programs,when is possible.\n\t\t\
+By default is set to (( (# of threads in the working cpu) -2 ))".
+    echo -e "\t-c\t[human|mouse|zebrafish]one species name for running CPAT with taco_refcompare."
+    echo -e "\t-v\tFull path to directory for html web visualization."
+    echo -e "\n"
+    echo -e "\tskip\tPass values for skipping pipe_align steps:\n\t\tsra\tDownload of sra files will be skipped.\
+\n\t\t\tIf skipped a directory for sra files must be provided with -s.\n\t\tdump\tFastq-dump step will be skipped.\
+\n\t\t\tIf skipped a directory for fastq files must be provided with -f.\n\t\ttrim\tTrimming step,FASTQC for trimmed files\
+\n\t\t\tand reads alignmet by star of trimmed files will be skipped.\n\t\t\tIf trim is provided,then star alignment of\
+ untrimmed files will be run.\n\t\tfqc\tFASTQC running will be skipped in all steps.\n\t\t\
+qc_raw\tFASTQC run for untrimmed fastq files will be skipped.\n\t\tqc_trim\t\
+FASTQC run for trimmed fastq files will be skipped.\n\t\tqc_bam\tFASTQC run for bam files will be skipped.\
+\n\t\tbw\tBigWig files generation from star bam files will be skipped.\
+\n\t\tsqc\tQuality control of bam files for splicing analysis will be skipped.\
+\n\t\tcov\tCoverage analysis of all samples will be skipped."
+    echo -e "\n"
+    echo -e "\t-h\tdisplay help"
+    echo -e "\n"
+}
+################################################################################
+#setting the global variables
+################################################################################
+#First assigning variables to passed parameters
+echo -e "\n" #it will add an empty before running the script
+while getopts ":ht:w:p:G:P:g:b:i:s:f:rF:T:c:v:m:V" opts;do
+  case "$opts" in
+    t) tb="$OPTARG";; #input table full path
+    w) wd="$OPTARG";; #working directory full path
+    p) project="$OPTARG";; #project name
+    P) par2="$OPTARG";; #number of files [sra or fastq ] that will be donwloaded in parallel
+    G) genome="$OPTARG";; #full path to species genome fasta fiel
+    g) gtf="$OPTARG";; #full path to gtf file
+    b) bed="$OPTARG";; #full path to bed file
+    i) staridx="$OPTARG";; #full path to star genome index
+    s) sra="$OPTARG";; #full path to directory of sra files
+    f) pwd1="$OPTARG";; #directory of fastq files
+    m) pwd4="$OPTARG"
+       if [ ! -d "$pwd4" ];then
+         echo "please provide a full path to a directory as argument for the parameter m" >&2
+         exit 1
+       fi
+    ;; #directory of trimmed_files
+    r) run="star_raw" #running star for untrimmed files
+       echo "Star alignment step for pipe_aling untrimmed fastq files was added to the pipeline.";;
+    F) gtf2="$OPTARG";; #full path to gtf file to upgrade
+    T) t="$OPTARG";; #number of threads set when is available in the runnning program
+    v) vd="$OPTARG";; #directory for genomic view track
+    S) species="$OPTARG";; #species name for running taco_compare [human|mouse|zebrafish]
+    V) echo "pipe_align version 0.1";exit 0;; #display pipe_align version
+    h)
+      usage
+      exit 0
+      ;;
+    \?)
+      echo -e "\tArgument -$OPTARG is invalid\nprovide a valid argument" >&2
+      usage
+      exit 1
+      ;;
+    :)
+      echo -e "\tParameter for -$OPTARG is missing" >&2
+      usage
+      exit 1
+      ;;
+    *)
+      usage
+      exit 1
+      ;;
+  esac
+done
+shift $(( OPTIND -1 )) #removing already passed parameters
+
+#passing skip positional parameters
+subcommand=$1 #assigning the first parameter after getopts parametes
+shift #remove pipe_align from argument list
+case "$subcommand" in
+  skip)
+        skipv=("$@") #passing all possitional parameters after skip to skipv
+        shift;; #remove skip from argument list
+esac
+
+#Mannaging passed arguments
+###########################
+#exiting the whole script if any mandatory argument has no parameter
+if [ -z "$tb" -o ! -f "$tb" ];then
+  echo "input table file does not exist" >&2
+  exit 1;fi
+if [ -z "$genome" -o ! -f "$genome" ];then
+  echo "a full path for a genome fasta file does not exist" >&2
+  exit 1;fi
+if [ -z "$gtf" -o ! -f "$gtf" ];then
+  echo "a full path for a gtf does not exist" >&2
+  exit 1;fi
+if [ -z "$bed" -o ! -f "$bed" ];then
+  echo "a full path for a bed file does not exist" >&2
+  exit 1;fi
+
+#passed skips and printing them
+val=$(for i in "${skipv[@]}";do if [ "$i" == "dump" ];then echo "$i";fi;done)
+if [ -n "$val" ];then echo "skipping: fastq-dump step";fi
+val1=$(for i in "${skipv[@]}";do if [ "$i" == "sra" ];then echo "$i";fi;done)
+if [ -n "$val1" ];then echo "skipping: sra donwload step from the NCBI";fi
+val2=$(for i in "${skipv[@]}";do if [ "$i" == "qc_raw" ];then echo "$i";fi;done)
+if [ -n "$val2" ];then echo "skipping: fastqc step for untrimmed fastq files";fi
+val3=$(for i in "${skipv[@]}";do if [ "$i" == "fqc" ];then echo "$i";fi;done)
+if [ -n "$val3" ];then
+  val2="qc_raw"
+  val5="qc_trim"
+  val6="qc_bam"
+  echo "skipping: fastqc steps from the pipeline"
+fi
+val4=$(for i in "${skipv[@]}";do if [ "$i" == "trim" ];then echo "$i";fi;done)
+if [ -n "$val4" ];then echo -e "skipping: trimming step,and all following depending steps\
+\n\t Star will run for untrimmed files.";fi
+val5=$(for i in "${skipv[@]}";do if [ "$i" == "qc_trim" ];then echo "$i";fi;done)
+if [ -n "$val5" ];then echo "skipping: fastqc step for trimmed fastq files";fi
+val6=$(for i in "${skipv[@]}";do if [ "$i" == "qc_bam" ];then echo "$i";fi;done)
+if [ -n "$val6" ];then echo "skipping: fastqc step of bam files";fi
+val7=$(for i in "${skipv[@]}";do if [ "$i" == "align" ];then echo "$i";fi;done)
+if [ -n "$val7" ];then echo "skipping: all alignment steps by star";fi
+val8=$(for i in "${skipv[@]}";do if [ "$i" == "bw" ];then echo "$i";fi;done)
+if [ -n "$val8" ];then echo "skipping: bigwig generation steps";fi
+val9=$(for i in "${skipv[@]}";do if [ "$i" == "sqc" ];then echo "$i";fi;done)
+if [ -n "$val9" ];then echo "skipping: splicing quality control steps";fi
+val10=$(for i in "${skipv[@]}";do if [ "$i" == "cov" ];then echo "$i";fi;done)
+if [ -n "$val10" ];then echo "skipping: coverage analysis step";fi
+sleep 2
+
+#exiting the script if sra download is skipped but not sra file directory is provided
+if [ "$val1" == "sra" -a ! -d "$sra" ];then
+  #and fastq-dump was not skipped
+    if [ "$val" != "dump" ];then
+      echo "if sra download step is skipped, a full path to an existing \
+directory of sra files must be provided.\
+\nFull path to sra file directory is missing" >&2
+  exit 1
+    fi
+fi
+
+#exiting the script if fastq dump is skipped but not fastq file directory is provided
+  if [ "$val" == "dump" -a ! -d "$pwd1" ];then
+    echo "if fastq-dump step is skipped, a full path to an existing \
+  directory of fastq files must be provided.\
+  \nFull path to fastq file directory is missing" >&2
+    exit 1;fi
+
+#verifying and creating the working directory -where most of the oupts will be
+#written-
+#if the working directory was provided then it will be assinged to a varaible
+if [ -n "$wd" -a -d "$wd" ]; then
+  echo "working directory: $wd"
+#if the provided wd does not exist, the whole script will exit
+elif [ -n "$wd" -a ! -d "$wd" ]; then
+  echo -e "provided directory does not exist\nplease provide a valid full path to an existing directory" >&2
+  exit 1
+#if a working directory is not provided
+#a directory with the project name will be created and set it as wd
+elif [ -z "$wd" ];then
+  if [ ! -d "$(pwd)/${project}" ];then mkdir "$(pwd)/${project}";fi
+  wd="$(pwd)/${project}"
+  echo "working directory: $wd"
+fi
+
+#verifying the provided full path to sra files directory
+if [ "$val" != "dump" -a "$val1" != "sra" ];then
+  if [ -d "$sra" ];then
+    echo "directory of sra files: $sra" #if existing it will be printed
+    #or the script will be skipped if the sra directory does not exist
+  elif [ -n "$sra" -a ! -d "$sra" ]; then
+    echo -e "provided sra directory does not exist\nplease provide a valid path to an existing directory" >&2
+    exit 1
+    #or created if sra directory was not provided
+  elif [ -z "$sra" ];then
+    if [ ! -d "$wd/sra" ];then mkdir "$wd/sra";fi
+    sra="$wd/sra"
+    echo "sra dir was created in the working directory"
+  fi
+fi
+
+#checking and assigning a varaible to passed directory of fastq files
+if [ -n "$pwd1" -a -d "$pwd1" ];then
+  echo "fastq files directory for raw untrimmed files: $pwd1"
+elif [ -n "$pwd1" -a ! -d "$pwd1" ];then
+  echo -e "provided directory of fastq files does not \
+exist\nplease provide a valid path to an existing directory" >&2
+  exit 1
+elif [ -z "$pwd1" ];then
+  if [ ! -d "$wd/raw" ];then mkdir "$wd/raw";fi
+  pwd1="$wd/raw"
+  echo "directory for fastq files storage was created at working directory"
+fi
+
+#making a genome visualizaton directory for the project
+#where files that can be uploaded to genomeBrowser or IGV will be stored
+if [ -n "$vd" -a -d "$vd" ]; then
+    #creating a dir for the project at the visualization directory
+    if [ ! -d "${vd}/${project}" ];then mkdir "${vd}/${project}";fi
+    #asssigning the variable pwdp to the project directory
+    pwdp="${vd}/${project}"
+    #if VD directory was provided but does not exist, the whole script will exit
+elif [ -n "$vd" ! -a -d "$vd" ];then
+    echo -e "the provided $vd does not exist" >&2
+    exit 1
+    #if not GV directory is provided then a GV directory will be created in
+    #the working directory
+elif [ -z "$vd" ];then
+    if [ ! -d "$wd/genome_view_${project}" ];then
+      mkdir "$wd/genome_view_${project}";fi
+    pwdp="$wd/genome_view_${project}"
+fi
+
+#star index testing
+if [ -n "$staridx" -a ! -d "$staridx" ];then
+  echo "star index directory does not exist" >&2
+  exit 1;fi
+#gtf2 for attributes extracting
+if [ ! -s "$gtf2" ];then
+  echo "file $gtf2 for extracting attributes into the provided $gtf\
+ does not exist" >&2
+  exit 1;fi
+
+echo "Run summary information" > "$wd"/run_summary_information.txt
+################################################################################
+#splitting tb into one line tables and making a list of tb-splited files
+split -l 1 "$tb" "$wd/split_" && ls | grep "$wd/split" > "$wd/spl_list"
+spl="$wd/spl_list"
+################################################################################
+
+################################################################################
+#RAW data generation
+################################################################################
+#sra download step will be ran if skipv is different from sra
+if [ "$val1" != "sra" ];then
+ echo "downloading sra files from NCBI"
+ #downloading SRA files
+ ######################
+ #writting a function that takes two arguments, the SRA run name and
+ # the sra directory full path download
+ #the sra file from the NCBI
+ sra_down ()
+ {
+    x="$1"
+    sra="$2"
+    wget -O "$sra/${x}.sra" \
+    "ftp://ftp-trace.ncbi.nih.gov/sra/sra-instant/reads/ByRun/sra/${x:0:3}/${x:0:6}/${x}/${x}.sra" || \
+    rm "$sra/${x}.sra" #in the case download fails the broken donwloaded file will be removed
+  }
+ export -f sra_down
+ #making a list of sra entries that will be download in parallel
+ if [ -s "$sra/sra_down_list" ];then rm "$sra/sra_down_list";fi
+ while read x discard;do
+  #and only SRA files that were not already been downloaded will make up the list
+  if [ ! -f "$sra/${x}.sra" ];then
+  "$x" >> "$sra/sra_down_list"
+  fi
+ done < $tb
+ #downloading as many sra files in parallel as the number passed with -P or
+ #the number of lines of the input_table
+ if [ -z "$par2" ];then par2=$(wc -l "$tb" | cut -f1 -d' ');fi
+ cat "$sra/sra_down_list" | nice -n 19 parallel -j "$par2" sra_down {} "$sra"
+fi
+
+#dumping the data from SRA to fastq
+###################################
+#if not skipped - val == dump - dumping will run
+if [ "$val" != "dump" ];then
+  echo "running fastq-dump"
+  echo "running fastq-dump $(fastq-dump --version)" >> "$wd"/run_summary_information.txt
+  #writting down a function that
+  #takes the tb input table and use the sra run id to dump the donwloaded files
+  #in sra format into fastq files depending on whether they are paired or single
+  #end reads base on the second column values of the input table
+  dump()
+  {
+  tb="$1" #the input file for running in parallel
+  sra="$2" #sra directory
+  pwd1="$3" #fastq directory
+  wd="$4" #working directory
+  while read x y discard;do
+    #if value is set to PAIRED
+    if [ "$y" == "PAIRED" ]; then
+      #if files does not exist they will not be dumped
+      if [ -f "${sra}/$x.sra" ];then
+        n1=$(ls "$pwd1"|grep "$x"|sed "s|^|"$pwd1/"|"| head -n 1)
+        n2=$(ls "$pwd1"|grep "$x"|sed "s|^|"$pwd1/"|"| tail -n 1)
+        #and whether the first or the second fastq file has not been
+        #already dumped
+        if [ ! -f "$n1" -o ! -f "$n2" ];then
+          #the sra file will added to the list of files to dump
+          fastq-dump --split-files --gzip --outdir "$pwd1" "${sra}/$x.sra"
+        fi
+      elif [ ! -f "${sra}/$x.sra" ];then
+        #if an SRA file does not exist adding to runing summary information
+        echo -e "\tfile ${sra}/$x.sra was not dumped,file does not exist" >> "$wd"/run_summary_information.txt
+      fi
+  #if value is set to SINGLE
+    elif [ "$y" == "SINGLE" ];then
+      if [ -f "${sra}/$x.sra" ];then
+        n1=$(ls "$pwd1"|grep "$x"|sed "s|^|"$pwd1/"|")
+        # and the fastq file has not been already dumped
+        if [ ! -f "$n1" ];then
+          #the sra file will be dumped
+          fastq-dump --gzip --outdir "$pwd1" "${sra}/$x.sra"
+        fi
+      elif [ ! -f "${sra}/$x.sra" ];then
+        #if an SRA file does not exist adding to runing summary information
+        echo -e "\tfile ${sra}/$x.sra was not dumped,it does not exist" >> "$wd"/run_summary_information.txt
+      fi
+  #if a varaible if different from SINGLE or PAIRED, the whole script
+  #ends with a non-zero return
+    else
+     echo -e >&2 "The input table must indicate whether the library layout is\n SINGLE or PAIRED"
+     exit 1
+   fi
+  done < "$tb" #end of the main fastq-dump loop
+  }
+  export -f dump
+  #making a variable for the number of dumping that will run in parallel
+  par=$(lscpu|awk 'NR==4{print $2}')
+  #dumping in parallel
+  cat "$spl" | nice -n 19 parallel -j $((par/2)) dump {} "$sra" "$pwd1" "$wd"
+fi
+
+#Performing the first  FASTQC for raw data
+##########################################
+#running if not skipped
+if [ "$val2" != "qc_raw" ];then
+  echo "running FASTQC of untrimmed files"
+  sleep 2
+#star of the main loop
+  #making fastqc directories in the working directory
+  if [ ! -d $wd/QC_fastq ];then mkdir $wd/QC_fastq;fi
+  if [ ! -d $wd/QC_fastq/raw ];then mkdir $wd/QC_fastq/raw;fi
+  pwd2=$wd/QC_fastq/raw
+
+  #making a fatqc directeroy in the project_visualization directory
+  if [ ! -d ${pwdp}/fastQC_raw ];then mkdir ${pwdp}/fastQC_raw;fi
+  pwd3=${pwdp}/fastQC_raw
+
+  #running raw-fastq QC analysis in a subshell
+  #due to the fastqc is not a core kernel of the main script
+  ( while read x y discard;do
+    #if the second column of the input table is set to PAIRED then
+    if [ "$y" == "PAIRED" ];then
+      n1=$(ls "$pwd1"|grep "$x"|sed "s|^|"$pwd1/"|"| head -n 1)
+      n2=$(ls "$pwd1"|grep "$x"|sed "s|^|"$pwd1/"|"| tail -n 1)
+      #FASTQC will run for each file if the input files exist
+      if [ -f "$n1" -a -f "$n2" ];then
+        #performing the first fastqc for PE raw data
+        nice -n 19 fastqc "$n1" -o "$pwd2" -t "$t"
+        #performing the second fastqc for PE raw data
+        nice -n 19 fastqc "$n2" -o "$pwd2" -t "$t"
+        if [ -d "$vd" ]; then
+          #coping the output html files to genome visualization directory
+          cp $(echo "${n1%.*}_fastqc.html"|sed "s|"$pwd1"|"$pwd2"|") "$pwd3" || echo "directory $pwd3 if full"
+          cp $(echo "${n2%.*}_fastqc.html"|sed "s|"$pwd1"|"$pwd2"|") "$pwd3" || echo "directory $pwd3 if full"
+        elif [ ! -d "$vd" ]; then
+          mv $(echo "${n1%.*}_fastqc.zip"|sed "s|"$pwd1"|"$pwd2"|") "$pwd3"
+          mv $(echo "${n2%.*}_fastqc.zip"|sed "s|"$pwd1"|"$pwd2"|") "$pwd3"
+        fi
+      fi
+#if the second column of the input table is set to SINGLE then
+    elif [ "$y" == "SINGLE" ]; then
+        n1=$(ls "$pwd1"|grep "$x"|sed "s|^|"$pwd1/"|")
+        #FASTQC will run if the input file exists
+        if [ -f "$n1" ];then
+          #performing fastqc for SE raw data
+          nice -n 19 fastqc "$n1" -o "$pwd2" -t "$t"
+          if [ -d $vd ]; then
+            cp $(echo "${n1%.*}_fastqc.html"|sed "s|"$pwd1"|"$pwd2"|") "$pwd3" || echo "directory $pwd3 if full"
+          elif [ ! -d $vd ]; then
+            mv $(echo "${n1%.*}_fastqc.zip"|sed "s|"$pwd1"|"$pwd2"|") "$pwd3"
+          fi
+        fi
+      #if the second column has neither PAIRED nor SINGLE the FASTQC step will exit the subshell
+    else
+        echo "FASTQC for raw data exit for incompatible library layout input-table value" >> "$wd"/run_summary_information.txt
+        echo -e "The input table must indicate whether the library layout is\n SINGLE or PAIRED" >&2
+        exit 1
+    fi
+  done < $tb; )
+echo "raw fastq QC step by : $(fastqc --version)" >> $wd/run_summary_information.txt
+#end of the main conditional
+fi
+
+#Running trimming if it was not skipped
+#####################################################
+if [ "$val4" != "trim" ];then
+#START OF TRIM-QC LOOP
+  #Trimming
+  #########
+  #making a directory for trimmed fastq files if not trimmed_files directory has already been passed
+  if [ -n "$pwd4" ];then
+    if [ -d "$wd/trimmed_files" ];then mkdir "$wd/trimmed_files";fi
+    pwd4="$wd/trimmed_files"
+  fi
+
+  #Runing trimmomatic
+  echo "running Trimmomatic"
+  #assigning variables to truseq files for trimming
+  tru_pe=~/src/pipe_align/adapters/trueseq_pe.fasta
+  tru_se=~/src/pipe_align/adapters/trueseq_se.fasta
+  while read x y discard;do
+    #if the library is PAIRED
+    if [ "$y" == "PAIRED" ];then
+      #making a directory for those after-trimming unplaced reads
+      if [ ! -d "$wd/trimmed_files/Unplaced" ];then
+          mkdir "$wd/trimmed_files/Unplaced";fi
+      Unplaced="$wd/trimmed_files/Unplaced"
+      #assining variables to untrimmed and trimmed fastq files
+      #untrimmed fastq files - input for Trimmomatic
+      r1=$(ls "$pwd1"|grep "$x"|sed "s|^|"$pwd1/"|"| head -n 1)
+      r2=$(ls "$pwd1"|grep "$x"|sed "s|^|"$pwd1/"|"| tail -n 1)
+      #trimmed fastq files - output of Trimmomatic
+      t1=$(ls "$pwd4"|grep "$x"|sed "s|^|"$pwd4/"|"| head -n 1)
+      t2=$(ls "$pwd4"|grep "$x"|sed "s|^|"$pwd4/"|"| tail -n 1)
+      #calling trimmomatic
+      #if the trimmed files do not exist and fastq files exist
+      if [ ! -f "$t1" -o ! -f "$t2" ]\
+      && [ -f "$r1" -a -f "$r2" ];then
+        #trimmomatic will run
+        #and if it fails the files will be deleted
+        nice -n 19 trimmomatic PE -threads "$t" -phred33 \
+        "$r1" "$r2" \
+        "${pwd4}/${x}_1.fq.gz" "${pwd4}/${x}_1_U.fq.gz" \
+        "${pwd4}/${x}_2.fq.gz" "${pwd4}/${x}_2_U.fq.gz" \
+        ILLUMINACLIP:"${tru_pe}":2:30:10 LEADING:3 TRAILING:3 \
+        SLIDINGWINDOW:4:15 MINLEN:20 || \
+        rm -f "${pwd4}/${x}_1.fq.gz" "${pwd4}/${x}_1_U.fq.gz" \
+        "${pwd4}/${x}_2.fq.gz" "${pwd4}/${x}_2_U.fq.gz"
+      fi
+      #after trimming the unplaced reads will be moved to the Unplaced directory
+      u1=$(ls "$pwd4" | grep "_U.fq"| sed "s|^|"$pwd4/"|"| head -n 1)
+      if [ -f "$u1" ];then
+        echo "moving $u1 to $Unplaced"
+        mv -f "$u1" "$Unplaced";fi
+      u2=$(ls "$pwd4" | grep "_U.fq"| sed "s|^|"$pwd4/"|"| tail -n 1)
+      if [ -f "$u2" ];then
+        echo "moving $u2 to $Unplaced"
+        mv -f "$u2" "$Unplaced";fi
+    elif [ "$y" == "SINGLE" ];then
+      #assining variables to untrimmed and trimmed fastq files
+      #untrimmed fastq files - input for Trimmomatic
+      r=$(ls "$pwd1"|grep "$x"|sed "s|^|"$pwd1/"|")
+      #trimmed fastq files - output of Trimmomatic
+      t=$(ls "$pwd4"|grep "$x"|sed "s|^|"$pwd4/"|")
+      #trimmomatic will run if output file does not exist and input file exist
+      if [ ! -f "$t" -a -f "$r" ];then
+      #and if it fails the files will be deleted
+      nice -n 19 trimmomatic SE -threads "$t" -phred33 \
+      "$n1" "${pwd4}/${x}.fq.gz" \
+      ILLUMINACLIP:"${tru_se}":2:30:10 LEADING:3 TRAILING:3 \
+      SLIDINGWINDOW:4:15 MINLEN:20 || \
+      rm -f "${pwd4}/${x}.fq.gz"
+      fi
+    else
+      echo -e "The input table must indicate whether the library layout is\n SINGLE or PAIRED" >&2
+      exit 1
+    fi
+  done < $tb
+  echo "trimming step done"
+  echo "raw fastq files trimming step by : trimmomatic version $(trimmomatic -version)" >> $wd/run_summary_information.txt
+
+#Performing the second fastqc for trimmed fastq files
+####################################################
+#if fastqc was not skipped
+  if [ "$val5" != "qc_trim" ];then
+    echo "running FASTQC of trimmed files"
+    sleep 2
+    #Making diectories for trimmed-fastq-files fastqc output data
+    if [ ! -d $wd/QC_fastq/trim ];then mkdir $wd/QC_fastq/trim;fi
+    pwd2=$wd/QC_fastq/trim
+    if [ ! -d ${pwdp}/fastQC_trim ];then mkdir ${pwdp}/fastQC_trim;fi
+    pwd3=${pwdp}/fastQC_trim
+
+    #running fastqc for fastq_trimmed files in a subshell
+  (
+  while read x y discard;do
+      #if fastq are paired-end
+      if [ "$y" == "PAIRED" ];then
+        #if input files exists fastqc will run
+        if [ -f "${pwd4}/${x}_1.fq.gz" -a -f "${pwd4}/${x}_2.fq.gz" ];then
+          nice -n 19 fastqc "${pwd4}/${x}_1.fq.gz" -o $pwd2 -t "$t"
+          nice -n 19 fastqc "${pwd4}/${x}_2.fq.gz" -o $pwd2 -t "$t"
+          if [ -d "$vd" ];then
+            #coping output file into GV directory if it is in a var directory
+            cp "${pwd2}/${x}_1_fastqc.html" $pwd3 || echo "directory $pwd3 if full"
+            cp "${pwd2}/${x}_2_fastqc.html" $pwd3 || echo "directory $pwd3 if full"
+          elif [ ! -d "$vd" ];then
+            #or moving to GV if it is in the working directory
+            mv "${pwd2}/${x}_1_fastqc.zip" $pwd3
+            mv "${pwd2}/${x}_2_fastqc.zip" $pwd3
+          fi
+        fi
+      elif [ "$y" == "SINGLE" ]; then
+        if [ -f "${pwd4}/${x}.fq.gz" ];then
+          nice -n 19 fastqc "${pwd4}/${x}.fq.gz" -o $pwd2 -t "$t"
+          if [ -d $vd ]; then
+            cp "${pwd2}/${x}_fastqc.html" $pwd3 || echo "directory $pwd3 if full"
+          elif [ ! -d $vd ]; then
+            mv "${pwd2}/${x}_fastqc.zip" $pwd3
+          fi
+        fi
+      else
+          echo -e "The input table must indicate whether the library layout is\n SINGLE or PAIRED" >&2
+          exit 1
+       fi
+    done < $tb
+    )
+      echo "trimmed fastq QC step by :  `fastqc --version`" >> $wd/run_summary_information.txt
+      #end of the FATQC-_Trim loop
+  fi
+    #END OF THE MAIN TRIMMED-QC LOOP
+fi
+
+###############################################################################
+#Reads alignment and QC analysis
+###############################################################################
+if [ "$val7" != "align" ];then
+#Alignment by star
+##################
+#making the star output directory and assigning it a variable
+if [ ! -d "$wd/star_alignment" ];then mkdir "$wd/star_alignment";fi
+pwd6="$wd/star_alignment"
+
+  #Genome index generation
+  ########################
+#if a genome index is not provided or genome file does not exist
+#star will build an index genome
+if [ "$staridx" == "" -o ! -f "$staridx/Genome" ];then
+  echo "building a star index"
+  #making a proper star index
+  #creating variables for reads alignment step
+  if [ ! -d "$pwd6/star_dir" ];then mkdir "$pwd6/star_dir";fi
+  star_dir="$pwd6/star_dir"
+  #max size of reads from the input table minus one
+  star_sjodb=$(($(cut -f3 $tb | sort -nr | head -1) - 1))
+#Runing star genomeGenerate
+  #running the algorithm for
+  #correcting the number of bits per chromosome
+  #if the genome is highly segmentated
+  if (( $(grep ">" $genome | wc -l) > 5000 ));then
+    #genome size
+    gsize=$(grep -v ">" $genome|wc|awk '{print $3 -$1}')
+    #number of chromosomes
+    nchr=$(grep ">" $genome | wc -l)
+    sac=$(echo "scale=2;l($gsize/$nchr)/l(2)" | bc -l)
+    sac=$(if [ $(echo "$sac < 18" | bc -l) ]
+          then printf "%.0f\n" $sac; else echo 18;fi)
+    nice -n 19 star \
+    --runThreadN "$t" --runMode genomeGenerate --genomeDir "$star_dir" \
+    --genomeFastaFiles "$genome" --sjdbGTFfile "$gtf" \
+    --sjdbOverhang "$star_sjodb" --genomeChrBinNbits "$sac"
+  #or just building a default star index
+  else
+  nice -n 19 star \
+  --runThreadN "$t" --runMode genomeGenerate --genomeDir "$star_dir" \
+  --genomeFastaFiles "$genome" --sjdbGTFfile "$gtf" --sjdbOverhang "$star_sjodb"
+  fi
+#if star index directory has been provided and exists
+elif [ -n "$staridx" -a -f "$staridx/Genome" ];then
+  star_dir="$staridx"
+#otherwise end the whole script
+else
+  echo -e "the provided star index directory does not exist or Genome file inside directory was not found" >&2
+  exit 1
+  #end of genome generating step
+fi
+#end of loop for skiping star alignment step
+fi
+echo "star index was built"
+  #Running star 2-pass mappin step with genome re-generation alignment for trimmed files
+  ####################################################################################
+#if nost skipped the whole trimming process
+if [ "$val4" != "trim" ];then
+  #if not skiiping alignment step by star
+  if [ "$val7" != "align" ];then
+  echo "running star for pipe_align-trim files..."
+  #START OF STAR alignment
+  #star first-pass
+    echo "starting star first pass"
+    while read x y discard;do
+    #running mode if they are PAIRED
+      if [ "$y" == "PAIRED" ]; then
+        #assigning a variable to reads and ziping them if they are unzipped
+        n1=$(ls "$pwd4" |grep "$x" |sed "s|^|"$pwd4/"|"| head -n 1)
+        if [ -f "$n1" ];then
+        file "$n1"| grep -q "gzip" || gzip "$n1";fi
+        n2=$(ls "$pwd4" |grep "$x"|sed "s|^|"$pwd4/"|"| tail -n 1)
+        if [ -f "$n2" ];then
+        file "$n2"| grep -q "gzip" || gzip "$n2";fi
+        #reassigning a varaible to reads, to take into acccount changes in zipped extentions -.gz-
+        n1=$(ls "$pwd4"|grep "$x"|sed "s|^|"$pwd4/"|"| head -n 1)
+        n2=$(ls "$pwd4"|grep "$x"|sed "s|^|"$pwd4/"|"| tail -n 1)
+      #if both fastq files exist star will be run
+        if [ -f "$n1" -a -f "$n2" ];then
+          #running star only if it has not been already run successfuly
+          o=$(ls "$pwd6/${x}"|grep "SJ.out.tab"|sed "s|^|"$pwd6/${x}/"|")
+          if [ ! -s "$o" ];then
+            echo "processing fastq file $n1"
+            echo "processing fastq file $n2"
+            #first star running, first pass
+            if [ ! -d "$pwd6/${x}" ];then mkdir  "$pwd6/${x}";fi
+            nice -n 19 star --runMode alignReads \
+            --readFilesCommand gunzip -c \
+            --genomeDir "$star_dir" --readFilesIn "$n1" "$n2" \
+            --outReadsUnmapped Fastx --chimSegmentMin 12 \
+            --chimJunctionOverhangMin 12 --alignSJDBoverhangMin 10 \
+            --alignMatesGapMax 100000 --alignIntronMax 100000 \
+            --chimSegmentReadGapMax 3 --alignSJstitchMismatchNmax 5 -1 5 5 \
+            --runThreadN "$t" --outSAMstrandField intronMotif \
+            --outFilterMultimapNmax 20 --outFilterType BySJout \
+            --outFilterMismatchNoverReadLmax 0.04 --alignIntronMin 20 \
+            --outSAMtype BAM Unsorted \
+            --outFileNamePrefix "$pwd6/${x}/" || rm -rf "$pwd6/${x}"
+          fi
+        fi
+      elif [ "$y" == "SINGLE" ]; then
+        #assigning a variable to reads and unziping them if they are zipped
+        n1=$(ls "$pwd4"|grep "$x"|sed "s|^|"$pwd4/"|")
+        if [ -f "$n1" ];then
+        file "$n1"| grep -q "gzip" || gunzip "$n1";fi
+        n1=$(ls "$pwd4"|grep "$x"|sed "s|^|"$pwd4/"|")
+        #running only if fastq file exists
+        if [ -f "$n1" ];then
+          #running star only if it has not been already run successfuly - SJ.out.tab file exists an has size greather than zero
+          o=$(ls "$pwd6/${x}"|grep "SJ.out.tab"|sed "s|^|"$pwd6/${x}/"|")
+          if [ ! -s "$o" ];then
+            echo "processing fastq file $n1"
+            #first star running, first pass
+            if [ ! -d "$pwd6/${x}" ];then mkdir  "$pwd6/${x}";fi
+            nice -n 19 star --runMode alignReads \
+            --readFilesCommand gunzip -c \
+            --genomeDir "$star_dir" --readFilesIn "$n1" \
+            --outReadsUnmapped Fastx --chimSegmentMin 12 \
+            --chimJunctionOverhangMin 12 --alignSJDBoverhangMin 10 \
+            --alignMatesGapMax 100000 --alignIntronMax 100000 \
+            --chimSegmentReadGapMax 3 --alignSJstitchMismatchNmax 5 -1 5 5 \
+            --runThreadN "$t" --outSAMstrandField intronMotif \
+            --outFilterMultimapNmax 20 --outFilterType BySJout \
+            --outFilterMismatchNoverReadLmax 0.04 --alignIntronMin 20 \
+            --outSAMtype BAM Unsorted \
+            --outFileNamePrefix "$pwd6/${x}/" || rm -rf "$pwd6/${x}"
+          fi
+        fi
+      else
+        echo -e "The input table must indicate whether the library layout is\nSINGLE or PAIRED" >&2
+    exit 1
+      fi
+   #end of the while loop
+    done < $tb
+    echo "star first pass done"
+    #Genome re-generating with merged SJ.out.tab files from first pass
+    ##################################################################
+    #not running if regnerate genome already exists
+    if [ ! -s "$pwd6/regenerate_star_dir/sjdbList.out.tab" ];then
+      #first running the the Rscript for generating SJ.out.tb merged and filter file
+      SJ_filter_combine.R trim "$pwd6"
+      #creating a file for the new star index genome at star_alignment directory
+      echo "starting star genome regeneration"
+      if [ ! -d "$pwd6/regenerate_star_dir" ];then mkdir "$pwd6/regenerate_star_dir";fi
+      re_star_dir="$pwd6/regenerate_star_dir"
+      #max size of reads from the input_table minus one
+      star_sjodb=$(($(cut -f3 $tb | sort -nr | head -1) - 1))
+      #running the algorithm for
+      #correcting the number of bits per chromosome
+      #if the genome is highly segmentated
+      if (( $(grep ">" $genome | wc -l) > 5000 ));then
+        #genome size
+        gsize=$(grep -v ">" $genome|wc|awk '{print $3 -$1}')
+        #number of chromosomes
+        nchr=$(grep ">" $genome | wc -l)
+        sac=$(echo "scale=2;l($gsize/$nchr)/l(2)" | bc -l)
+        sac=$(if [ $(echo "$sac < 18" | bc -l) ];then printf "%.0f\n" $sac
+              else echo 18;fi)
+        nice -n 19 star \
+        --runThreadN "$t" --runMode genomeGenerate \
+        --genomeDir "${re_star_dir}" \
+        --genomeFastaFiles "$genome" --sjdbGTFfile "$gtf" \
+        --sjdbFileChrStartEnd "$pwd6/SJ.out.filter_combine_trim" \
+        --sjdbOverhang "$star_sjodb" --genomeChrBinNbits "$sac"
+      #or just building a default star index
+      else
+        nice -n 19 star \
+        --runThreadN "$t" --runMode genomeGenerate \
+        --genomeDir "${re_star_dir}" \
+        --genomeFastaFiles "$genome" --sjdbGTFfile "$gtf" \
+        --sjdbFileChrStartEnd "$pwd6/SJ.out.filter_combine_trim" \
+        --sjdbOverhang "$star_sjodb"
+      fi
+      echo "genome regeneration done"
+    else
+      re_star_dir="$pwd6/regenerate_star_dir"
+      echo "regenerate genome was alredy built"
+    #end of already existing regenerated genome conditional
+    fi
+
+    #second star running, second pass
+    echo "starting star second pass..."
+    while read x y discard;do
+      #if STAR first pass ends wihout exceptions and star second pass has already been successfully run
+      if [ -s "$pwd6/${x}/SJ.out.tab" -a ! -s "$pwd6/${x}/${x}.out.sort.bam.bai" ];then
+        #running mode if they are PAIRED
+        if [ "$y" == "PAIRED" ]; then
+        #assigning a variable to reads
+          n1=$(ls "$pwd4"|grep "$x"|sed "s|^|"$pwd4/"|"| head -n 1)
+          n2=$(ls "$pwd4"|grep "$x"|sed "s|^|"$pwd4/"|"| tail -n 1)
+          #second star pass
+          echo "processing samples $n1 & $n2"
+          nice -n 19 star --runMode alignReads --genomeDir "${re_star_dir}" \
+          --readFilesCommand gunzip -c \
+          --readFilesIn "$n1" "$n2" --outReadsUnmapped Fastx \
+          --chimSegmentMin 12 --chimJunctionOverhangMin 12 \
+          --alignSJDBoverhangMin 10 --alignMatesGapMax 100000 \
+          --alignIntronMax 100000 --chimSegmentReadGapMax 3 \
+          --alignSJstitchMismatchNmax 5 -1 5 5 --runThreadN "$t" \
+          --outSAMstrandField intronMotif --outFilterMultimapNmax 20 \
+          --outFilterType BySJout --outFilterMismatchNoverReadLmax 0.04 \
+          --alignIntronMin 20 --quantMode TranscriptomeSAM \
+          --outSAMtype BAM Unsorted --outMultimapperOrder Random \
+          --outFileNamePrefix "$pwd6/${x}/" || rm -rf "$pwd6/${x}"
+          #sorting bam output file
+          echo "sorting output bam file"
+          nice -n 19 samtools sort -@ "$t" "$pwd6/${x}/Aligned.out.bam"  >  "$pwd6/${x}/${x}.out.sort.bam"
+          #indexing bam output file
+          echo "indexing output bam file"
+          nice -n 19 samtools index "$pwd6/${x}/${x}.out.sort.bam" "$pwd6/${x}/${x}.out.sort.bam.bai"
+          #removing original bam file
+          rm "$pwd6/${x}/Aligned.out.bam"
+          #modifying Log.final.out file for summarizing all them
+          sed -i 's/|//;s/://' "$pwd6/${x}/Log.final.out"
+        elif [ "$y" == "SINGLE" ]; then
+          #assigning a variable to reads
+          n1=$(ls "$pwd4"|grep "$x"|sed "s|^|"$pwd4/"|")
+          #first star running, first pass
+          if [ ! -d "$pwd6/${x}" ];then mkdir  "$pwd6/${x}";fi
+          nice -n 19 star --runMode alignReads \
+          --genomeDir "${re_star_dir}" -readFilesCommand gunzip -c \
+          --readFilesIn "$n1" --outReadsUnmapped Fastx --chimSegmentMin 12 \
+          --chimJunctionOverhangMin 12 --alignSJDBoverhangMin 10 \
+          --alignMatesGapMax 100000 --alignIntronMax 100000 \
+          --chimSegmentReadGapMax 3 --alignSJstitchMismatchNmax 5 -1 5 5\
+          --runThreadN "$t" --outSAMstrandField intronMotif \
+          --outFilterMultimapNmax 20 --quantMode TranscriptomeSAM \
+          --outFilterType BySJout --outFilterMismatchNoverReadLmax 0.04 \
+          --alignIntronMin 20 --outSAMtype BAM Unsorted \
+          --outMultimapperOrder Random \
+          --outFileNamePrefix "$pwd6/${x}/" || rm -rf "$pwd6/${x}"
+          #sorting bam output file
+          echo "indexing output bam file"
+          nice -n 19 samtools sort -@ "$t" "$pwd6/${x}/Aligned.out.bam"  >  "$pwd6/${x}/${x}.out.sort.bam"
+          #indexing bam output file
+          echo "indexing output bam file"
+          nice -n 19 samtools index "$pwd6/${x}/${x}.out.sort.bam" "$pwd6/${x}/${x}.out.sort.bam.bai"
+          #removing original bam file
+          rm "$pwd6/${x}/Aligned.out.bam"
+          #modifying Log.final.out file for summarizing all them
+          sed -i 's/|//;s/://' "$pwd6/${x}/Log.final.out"
+        else
+          echo -e "The input table must indicate whether the library layout is\nSINGLE or PAIRED" >&2
+          exit 1
+        fi
+      fi
+    #end of star second pass  while-loop
+    done < $tb
+    echo "star second pass done"
+    echo "alignment step by of trimmed files during pipe_align:  `star --version`" >> $wd/run_summary_information.txt
+    echo "star for pipe_align-trim files ... done!"
+    sleep 2
+  #end of star alingment skip conditional
+  fi
+
+  if [ "$val6" != "qc_bam" ];then
+    echo "running fastQC for pipe_align-trim bam files ..."
+  #Aligned Reads -BAM- fastQC for trimmed files
+  ##############################################
+    #star-otuput bam Fastqc analysis
+    #making a directory for fastqc analysis
+    if [ ! -d "${wd}/QC_alignment" ];then
+    mkdir "${wd}/QC_alignment";fi
+    if [ ! -d "${wd}/QC_alignment/fastqc" ];then
+    mkdir "${wd}/QC_alignment/fastqc";fi
+    #assigning a variable to the pathway
+    pwd2="${wd}/QC_alignment/fastqc"
+    #making a directory for fastqc output
+    if [ ! -d "${pwdp}/fastQC_alignment" ];then
+    mkdir "${pwdp}/fastQC_alignment";fi
+    pwd3="${pwdp}/fastQC_alignment"
+    #running fastqc for bam files
+    while read x discard;do
+      if [ ! -d "${pwd2}/${x}" ];then mkdir "${pwd2}/${x}";fi
+      #running FASTQC if star ends without exceptions and output file has not been already generated
+      if [ -s "${pwd6}/${x}/Log.final.out" -a ! -s "${pwd2}/${x}/${x}.out.sort_fastqc.zip" ];then
+        echo "processing $x"
+        nice -n 19 fastqc "$pwd6/${x}/${x}.out.sort.bam" -o "${pwd2}/${x}" -t "$t"
+        if [ -d "$vd" ]; then
+        cp "${pwd2}/${x}/${x}.out.sort_fastqc.html" "${pwd3}/${x}_fastqc.html" || echo "directory $pwd3 if full"
+        elif [ ! -d "$vd" ]; then
+        mv "${pwd2}/${x}/${x}.out.sort_fastqc.zip" "${pwd3}/${x}_fastqc.zip"
+        fi
+      fi
+    done < $tb
+#end of FASTQC loop for bam file
+    echo "fastQC for bam files is done !"
+    sleep 2
+  fi
+#END OF STAR_TRIM -DEFAULT- RUN-LOOP
+fi
+
+
+  #STAR and fastQC of bam files of pipe_align untrimmed files
+  ###########################################################
+#if star alingment step was not skiiping with skip
+if [ "$val7" != "align" ];then
+#if calling by using argument -r or skipping trim steps
+if [ "$val4" == "trim" -o "$run" == "star_raw" ];then
+#Running star 2-step pass alignment for raw fastq files
+#######################################################
+echo "running star for pipe_align-untrimmed fastq "
+#START OF STAR_RAW RUN-LOOP
+#star first-pass
+  echo "starting star first pass"
+  while read x y discard;do
+  #running mode if they are PAIRED
+    if [ "$y" == "PAIRED" ]; then
+      #assigning a variable to reads and ziping them if they are unzipped
+      n1=$(ls "$pwd1"|grep "$x"|sed "s|^|"$pwd1/"|"| head -n 1)
+      if [ -f "$n1" ];then
+      file "$n1"| grep -q "gzip" || gzip "$n1";fi
+      n2=$(ls "$pwd1"|grep "$x"|sed "s|^|"$pwd1/"|"| tail -n 1)
+      if [ -f "$n2" ];then
+      file "$n2"| grep -q "gzip" || gzip "$n2";fi
+      #reassigning a varaible to reads, to take into acccount changes in zipped extentions -.gz-
+      n1=$(ls "$pwd1"|grep "$x"|sed "s|^|"$pwd1/"|"| head -n 1)
+      n2=$(ls "$pwd1"|grep "$x"|sed "s|^|"$pwd1/"|"| tail -n 1)
+    #if both fastq files exist star will be run
+      if [ -f "$n1" -a -f "$n2" ];then
+        #running star only if it has not been already run successfuly
+        o=$(ls "$pwd6/${x}_raw"|grep "SJ.out.tab"|sed "s|^|"$pwd6/${x}_raw/"|")
+        if [ ! -s "$o" ];then
+          echo "processing fastq file $n1"
+          echo "processing fastq file $n2"
+          #first star running, first pass
+          if [ ! -d "$pwd6/${x}_raw" ];then mkdir  "$pwd6/${x}_raw";fi
+          nice -n 19 star --runMode alignReads \
+          --genomeDir "$star_dir" \
+          --readFilesCommand gunzip -c --readFilesIn "$n1" "$n2" \
+          --outReadsUnmapped Fastx --chimSegmentMin 12 \
+          --chimJunctionOverhangMin 12 --alignSJDBoverhangMin 10 \
+          --alignMatesGapMax 100000 --alignIntronMax 100000 \
+          --chimSegmentReadGapMax 3 --alignSJstitchMismatchNmax 5 -1 5 5 \
+          --runThreadN "$t" --outSAMstrandField intronMotif \
+          --outFilterMultimapNmax 20 --outFilterType BySJout \
+          --outFilterMismatchNoverReadLmax 0.04 --alignIntronMin 20 \
+          --outSAMtype BAM Unsorted \
+          --outFileNamePrefix "$pwd6/${x}_raw/" || rm -rf "$pwd6/${x}_raw"
+        fi
+      fi
+    elif [ "$y" == "SINGLE" ]; then
+      #assigning a variable to reads and unziping them if they are zipped
+      n1=$(ls "$pwd1"|grep "$x"|sed "s|^|"$pwd1/"|")
+      if [ -f "$n1" ];then
+      file "$n1"| grep -q "gzip" || gunzip "$n1";fi
+      n1=$(ls "$pwd1"|grep "$x"|sed "s|^|"$pwd1/"|")
+      #running only if fastq file exists
+      if [ -f "$n1" ];then
+        #running star only if it has not been already run successfuly
+        o=$(ls "$pwd6/${x}_raw"|grep "SJ.out.tab"|sed "s|^|"$pwd6/${x}_raw/"|")
+        if [ ! -s "$o" ];then
+          echo "processing fastq file $n1"
+          #first star running, first pass
+          if [ ! -d "$pwd6/${x}_raw" ];then mkdir  "$pwd6/${x}_raw";fi
+          nice -n 19 star --runMode alignReads \
+          --readFilesCommand gunzip -c \
+          --genomeDir "$star_dir" --readFilesIn "$n1" \
+          --outReadsUnmapped Fastx --chimSegmentMin 12 \
+          --chimJunctionOverhangMin 12 --alignSJDBoverhangMin 10 \
+          --alignMatesGapMax 100000 --alignIntronMax 100000 \
+          --chimSegmentReadGapMax 3 --alignSJstitchMismatchNmax 5 -1 5 5 \
+          --runThreadN "$t" --outSAMstrandField intronMotif \
+          --outFilterMultimapNmax 20 --outFilterType BySJout \
+          --outFilterMismatchNoverReadLmax 0.04 --alignIntronMin 20 \
+          --outSAMtype BAM Unsorted \
+          --outFileNamePrefix "$pwd6/${x}_raw/" || rm -rf "$pwd6/${x}_raw"
+        fi
+      fi
+    else
+      echo -e "The input table must indicate whether the library layout is\nSINGLE or PAIRED" >&2
+      exit 1
+    fi
+ #end of the while loop
+  done < $tb
+  echo "star first pass done"
+  #Genome re-generating with merged SJ.out.tab files from first pass
+  ##################################################################
+  #not running if regnerate genome already exists
+  if [ ! -s "$pwd6/regenerate_star_dir_raw/sjdbList.out.tab" ];then
+    #first running the the Rscript for generating SJ.out.tb merged and filter file
+    SJ_filter_combine.R raw "$pwd6"
+    echo "starting star genome regeneration"
+    #creating a file for the new star index genome at star_alignment directory
+    if [ ! -d "$pwd6/regenerate_star_dir_raw" ];then mkdir "$pwd6/regenerate_star_dir_raw";fi
+    re_star_dir_raw="$pwd6/regenerate_star_dir_raw"
+    #max size of reads from the input_table minus one
+    star_sjodb=$(($(cut -f3 $tb | sort -nr | head -1) - 1))
+    #running the algorithm for correcting the number of bits per chromosome
+    #if the genome is highly segmentated
+    if (( $(grep ">" $genome | wc -l) > 5000 ));then
+      #genome size
+      gsize=$(grep -v ">" $genome|wc|awk '{print $3 -$1}')
+      #number of chromosomes
+      nchr=$(grep ">" $genome | wc -l)
+      sac=$(echo "scale=2;l($gsize/$nchr)/l(2)" | bc -l)
+      sac=$(if [ $(echo "$sac < 18" | bc -l) ];then printf "%.0f\n" $sac
+            else echo 18;fi)
+      nice -n 19 star \
+      --runThreadN "$t" --runMode genomeGenerate --genomeDir "${re_star_dir_raw}" \
+      --genomeFastaFiles "$genome" --sjdbGTFfile "$gtf" \
+      --sjdbFileChrStartEnd "$pwd6/SJ.out.filter_combine_raw" \
+      --sjdbOverhang "$star_sjodb" --genomeChrBinNbits "$sac"
+    #or just building a default star index
+    else
+      nice -n 19 star \
+      --runThreadN "$t" --runMode genomeGenerate \
+      --genomeDir "${re_star_dir_raw}" \
+      --genomeFastaFiles "$genome" --sjdbGTFfile "$gtf" \
+      --sjdbFileChrStartEnd "$pwd6/SJ.out.filter_combine_raw" \
+      --sjdbOverhang "$star_sjodb"
+    fi
+    echo "genome regeneration done"
+  else
+    re_star_dir_raw="$pwd6/regenerate_star_dir_raw"
+    echo "regenerated genome already exists"
+  #end of already existing regenerated genome conditional
+  fi
+
+  #second star running, second pass
+  echo "starting star second pass..."
+  while read x y discard;do
+    #if STAR first pass ends wihout exceptions and STAR second pass
+    if [ -s "$pwd6/${x}_raw/SJ.out.tab" -a ! -s "$pwd6/${x}_raw/${x}.out.sort.bam.bai" ];then
+      #running mode if they are PAIRED
+      if [ "$y" == "PAIRED" ]; then
+      #assigning a variable to reads
+        n1=$(ls "$pwd1"|grep "$x"|sed "s|^|"$pwd1/"|"| head -n 1)
+        n2=$(ls "$pwd1"|grep "$x"|sed "s|^|"$pwd1/"|"| tail -n 1)
+        #second star pass
+        if [ ! -d "$pwd6/${x}_raw" ];then mkdir  "$pwd6/${x}_raw";fi
+        echo "processing samples $n1 & $n2"
+        nice -n 19 star --runMode alignReads \
+        --genomeDir "${re_star_dir_raw}" \
+        --readFilesCommand gunzip -c \
+        --readFilesIn "$n1" "$n2" --outReadsUnmapped Fastx \
+        --chimSegmentMin 12 --chimJunctionOverhangMin 12 \
+        --alignSJDBoverhangMin 10 --alignMatesGapMax 100000 \
+        --alignIntronMax 100000 --chimSegmentReadGapMax 3 \
+        --alignSJstitchMismatchNmax 5 -1 5 5 --runThreadN "$t" \
+        --outSAMstrandField intronMotif --outFilterMultimapNmax 20 \
+        --outFilterType BySJout --outFilterMismatchNoverReadLmax 0.04 \
+        --alignIntronMin 20 --quantMode TranscriptomeSAM \
+        --outSAMtype BAM Unsorted --outMultimapperOrder Random \
+        --outFileNamePrefix "$pwd6/${x}_raw/" || rm -rf "$pwd6/${x}_raw"
+        #sorting bam output file
+        echo "sorting output bam file"
+        nice -n 19 samtools sort -@ "$t" "$pwd6/${x}_raw/Aligned.out.bam"  >  "$pwd6/${x}_raw/${x}.out.sort.bam"
+        #indexing bam output file
+        echo "indexing output bam file"
+        nice -n 19 samtools index "$pwd6/${x}_raw/${x}.out.sort.bam" "$pwd6/${x}_raw/${x}.out.sort.bam.bai"
+        #removing original bam file
+        rm "$pwd6/${x}_raw/Aligned.out.bam"
+        #modifying Log.final.out file for summarizing all them
+        sed -i 's/|//;s/://' "$pwd6/${x}_raw/Log.final.out"
+      elif [ "$y" == "SINGLE" ]; then
+        #assigning a variable to reads
+        n1=$(ls "$pwd4"|grep "$x"|sed "s|^|"$pwd4/"|")
+        #first star running, first pass
+        if [ ! -d "$pwd6/${x}_raw" ];then mkdir  "$pwd6/${x}_raw";fi
+        nice -n 19 star --runMode alignReads \
+        --genomeDir "${re_star_dir_raw}" \
+        --readFilesCommand gunzip -c \
+        --readFilesIn "$n1" --outReadsUnmapped Fastx --chimSegmentMin 12 \
+        --chimJunctionOverhangMin 12 --alignSJDBoverhangMin 10 \
+        --alignMatesGapMax 100000 --alignIntronMax 100000 \
+        --chimSegmentReadGapMax 3 --alignSJstitchMismatchNmax 5 -1 5 5\
+        --runThreadN "$t" --outSAMstrandField intronMotif \
+        --outFilterMultimapNmax 20 --quantMode TranscriptomeSAM \
+        --outFilterType BySJout --outFilterMismatchNoverReadLmax 0.04 \
+        --alignIntronMin 20 --outSAMtype BAM Unsorted \
+        --outMultimapperOrder Random \
+        --outFileNamePrefix "$pwd6/${x}_raw/" || rm -rf "$pwd6/${x}_raw"
+        #sorting bam output file with samtools
+        echo "sorting output bam file"
+        nice -n 19 samtools sort -@ "$t" "$pwd6/${x}_raw/Aligned.out.bam"  >  "$pwd6/${x}_raw/${x}.out.sort.bam"
+        #indexing bam output file with samtools
+        echo "indexing output bam file"
+        nice -n 19 samtools index "$pwd6/${x}_raw/${x}.out.sort.bam" "$pwd6/${x}_raw/${x}.out.sort.bam.bai"
+        #removing original bam file
+        rm "$pwd6/${x}_raw/Aligned.out.bam"
+        #modifying Log.final.out file for summarizing all them
+        sed -i 's/|//;s/://' "$pwd6/${x}_raw/Log.final.out"
+      else
+        echo -e "The input table must indicate whether the library layout is\nSINGLE or PAIRED" >&2
+        exit 1
+      fi
+    fi
+  #end of star second pass  while-loop
+  done < $tb
+  echo "star second pass done"
+  echo "raw alignment step by :  `star --version`" >> $wd/run_summary_information.txt
+#end of star alignment skiiping conditional
+echo "star for pipe_align-trim files ... done!"
+sleep 2
+fi
+#runing fastqc if not skipped
+  if [ "$val6" != "qc_bam" ];then
+    echo "running fastQC for pipe_align-raw bam files"
+    #Alignament QC for raw data
+    ###########################
+    #star-otuput bam Fastqc analysis
+    #making a directory for fastqc analysis
+    if [ ! -d "${wd}/QC_alignment_raw" ];then mkdir "${wd}/QC_alignment_raw";fi
+    if [ ! -d "${wd}/QC_alignment_raw/fastqc" ];then
+    mkdir "${wd}/QC_alignment_raw/fastqc";fi
+    #assigning a variable to the pathway
+    pwd2="${wd}/QC_alignment_raw/fastqc"
+    #making a directory for fastqc output
+    if [ ! -d "${pwdp}/fastQC_alignment_raw" ];then
+    mkdir "${pwdp}/fastQC_alignment_raw";fi
+    pwd3="${pwdp}/fastQC_alignment_raw"
+    #fastQC while loop
+    while read x discard;do
+      if [ ! -d  "${pwd2}/${x}" ];then mkdir  "${pwd2}/${x}";fi
+      #running fastQC if input files exist and output files has not been already generated
+      if [ -s "${pwd6}/${x}_raw/Log.final.out" -a ! -s "${pwd2}/${x}/${x}.out.sort_fastqc.zip" ];then
+        echo "processing $x"
+        nice -n 19 fastqc "$pwd6/${x}_raw/${x}.out.sort.bam" -o "${pwd2}/${x}" -t "$t"
+        if [ -d "$vd" ]; then
+        cp "${pwd2}/${x}/${x}.out.sort_fastqc.html" "${pwd3}/${x}_fastqc.html" || echo "directory $pwd3 if full"
+        elif [ ! -d "$vd" ]; then
+        mv "${pwd2}/${x}/${x}.out.sort_fastqc.zip" "${pwd3}/${x}_fastqc.zip"
+        fi
+      fi
+    done < $tb
+    echo "fastQC for pipe_align-raw bam files is done!"
+    sleep 2
+  fi
+#END OF STAR_RAW RUN-LOOP
+fi
+
+################################################################################
+#coverage
+################################################################################
+#making a directory for aligments outputs:bigwig files, scallop and taco, fasta transcriptome
+if [ ! -d "$wd/assembly_star" ];then mkdir "$wd/assembly_star";fi
+assembly_star="$wd/assembly_star"
+if [ ! -d "${pwdp}/assembly_star" ];then mkdir "${pwdp}/assembly_star";fi
+pas="${pwdp}/assembly_star"
+#bigwig step
+############
+#if the whole bigwig step was not skipped
+if [ "$val8" != "bw" ];then
+  if [ ! -d "${assembly_star}/bw" ];then mkdir "${assembly_star}/bw";fi
+  #step global variables
+  bw="${assembly_star}/bw"
+  chrsize="${re_star_dir}/chrNameLength.txt"
+#runnning if not trim steps were skipped
+  if [ "$val4" != "trim" ];then
+    #generating bigwig files with RseQC
+    echo "generating bigwig file/s for pipe_aling trimmed files"
+  #writting down a function that will allow run in parallel the
+  #transformation from bam to bigwig
+  bw_trim()
+    {
+      tb="$1"
+      pwd6="$2"
+      bed="$3"
+      bw="$4"
+      chrsize="$5"
+      pas="$6"
+    while read x y discard;do
+    #if sorted indexed bam file exists - if input exist- then
+      if [ -s "$pwd6/${x}/${x}.out.sort.bam.bai" ];then
+        #assining a variable to strandness rule
+        rule=$(inf_exp.sh "$pwd6/${x}/${x}.out.sort.bam" "$bed")
+        wigsum=$(bam2bw.norm.R "$pwd6/${x}/")
+        echo "sample ${x} has as rule ${rule} and a total wigsum of ${wigsum}"\
+        > "$pwd6/${x}/running_arguments.txt"
+        if [ -n "$rule" ]; then
+          #if library was strand specific and output does not exist then
+          if [ ! -s "$bw/${x}.Forward.bw" -a ! -s "$bw/${x}_raw.Reverse.bw" ];then
+          echo "processing $x"
+          nice -n 19 bam2wig.py -i "$pwd6/${x}/${x}.out.sort.bam" -s "$chrsize" -o "$bw/${x}" -t "$wigsum" -d "$rule"
+          rm -f $(ls "$bw"|grep "${x}"|sed "s|^|$bw/|"|grep "wig")
+          cp $(ls "$bw"|grep "${x}"|sed "s|^|$bw/|"|grep "bw") "$pas" \
+          || echo "can not be able to copy file, please check directory space"
+          fi
+        else
+          #if library was not strand specific and output does not exist then
+          if [ ! -s "$bw/${x}.bw" ];then
+          echo "processing $x"
+          nice -n 19 bam2wig.py -i "$pwd6/${x}/${x}.out.sort.bam" -s "$chrsize" -o "$bw/${x}" -t "$wigsum"
+          rm -f $(ls "$bw"|grep "${x}"|sed "s|^|$bw/|"|grep "wig")
+          cp $(ls "$bw"|grep "${x}"|sed "s|^|$bw/|"|grep "bw") "$pas" \
+          || echo "can not be able to copy file, please check directory space"
+          fi
+        fi
+      fi
+    done < "$tb"
+    }
+    export -f bw_trim
+    #running in parallel
+    cat "$spl" | parallel -j "$t" bw_trim {} "$pwd6" "$bed" "$bw" "$chrsize" "$pas"
+    echo "bigwig files generation was done ..!"
+    sleep 2
+  fi
+    #if step not skipped then
+  if [ "$val4" == "trim" -o "$run" == "star_raw" ];then
+    #generating bigwig files with RseQC
+    echo "generating bigwig file/s for pipe_align untrimmed files"
+    chrsize="${re_star_dir_raw}/chrNameLength.txt"
+    #assining a variable to strandness rule
+    bw_raw()
+    {
+      tb="$1"
+      pwd6="$2"
+      bed="$3"
+      bw="$4"
+      chrsize="$5"
+      pas="$6"
+    while read x discard;do
+    #if sorted indexed bam file exists - if input exist- then
+      if [ -s "$pwd6/${x}/${x}.out.sort.bam.bai" ];then
+        rule=$(inf_exp.sh "$pwd6/${x}_raw/${x}.out.sort.bam" "$bed")
+        wigsum=$(bam2bw.norm.R "$pwd6/${x}_raw/")
+        echo "sample ${x} has as rule ${rule} and a total wigsum of ${wigsum}" \
+        > "$pwd6/${x}_raw/running_arguments.txt"
+        if [ "$rule" != "" ]; then
+          #if library was strand specific and output does not exist then
+          if [ ! -s "$bw/${x}_raw.Forward.bw" -a ! -s "$bw/${x}_raw.Reverse.bw" ];then
+            echo "processing $x"
+            nice -n 19 bam2wig.py -i  "$pwd6/${x}_raw/${x}.out.sort.bam" -s "$chrsize"  -o "$bw/${x}_raw" -t "$wigsum" -d "$rule"
+            rm -f $(ls "$bw"|grep "${x}_raw"|sed "s|^|$bw/|"|grep "wig")
+            cp $(ls "$bw"|grep "${x}_raw"|sed "s|^|$bw/|"|grep "bw") "$pas" \
+            || echo "can not be able to copy file, please check directory space"
+          fi
+        else
+          #if library was not strand specific and output does not exist then
+          if [ ! -s "$bw/${x}.bw" ];then
+            echo "processing $x"
+            nice -n 19 bam2wig.py -i  "$pwd6/${x}_raw/${x}.out.sort.bam" -s "$chrsize"  -o "$bw/${x}_raw" -t "$wigsum"
+            rm -f $(ls "$bw"|grep "${x}_raw"|sed "s|^|$bw/|"|grep "wig")
+            cp $(ls "$bw"|grep "${x}_raw"|sed "s|^|$bw/|"|grep "bw") "$pas" \
+            || echo "can not be able to copy file, please check directory space"
+          fi
+        fi
+      fi
+    done < "$tb"
+    }
+    export -f bw_raw
+    cat "$spl" | parallel -j "$t" bw_raw {} "$pwd6" "$bed" "$bw" "$chrsize" "$pas"
+    echo "bigwig files generation was done ..!"
+    sleep 2
+  fi
+#end of bigwig generation step
+fi
+#Splicing saturation analysis
+##############################
+#if splicing QC step was not skipped then run it
+if [ "$val9" != "sqc" ];then
+#running for "raw" samples if not skipped
+if [ "$val4" == "trim" -o "$run" == "star_raw" ];then
+  if [ ! -d "${wd}/QC_alignment_raw" ];then mkdir "${wd}/QC_alignment_raw";fi
+  qc_align="${wd}/QC_alignment_raw"
+  if [ ! -d "$qc_align/splicing" ];then mkdir "$qc_align/splicing";fi
+  qc_splice="$qc_align/splicing"
+  #QC for splicing analysis it will look for only unique mapped reads as phred is set to 30,default
+  #and the minimun intron length is set to 20 -m as it was the already set as an star argument in pipe_align
+  junction_raw()
+  {
+    tb="$1"
+    qc_splice="$2"
+    pwd6="$3"
+    bed="$4"
+  while read s discard;do
+    #if final output does not exist and input exists then
+    if [ ! -s "$qc_splice/${s}_raw/jSat_table" -a -s "$pwd6/${s}_raw/${s}.out.sort.bam" ];then
+      if [ ! -d "$qc_splice/${s}_raw/" ];then mkdir "$qc_splice/${s}_raw/";fi
+      nice -n 19 junction_annotation.py -i "$pwd6/${s}_raw/${s}.out.sort.bam" \
+      -r "$bed" -o "$qc_splice/${s}_raw/s" -m 20
+      nice -n 19 junction_saturation.py -i "$pwd6/${s}_raw/${s}.out.sort.bam" \
+      -r "$bed" -o "$qc_splice/${s}_raw/s" -m 20
+      for i in {x,y,z,w};do
+        grep "$i=" "$qc_splice/${s}_raw/s.junctionSaturation_plot.r" |\
+        cut -f2 -d'=' | sed "s|^c(||" | sed "s|)$||" |\
+        sed "s|^|$i,|" >> "$qc_splice/${s}_raw/jSat_table"
+      done
+    fi
+  done < "$tb"
+  }
+  export -f junction_raw
+  #running in parallel as many instances as threads introduce
+  cat "$spl" | parallel -j "$t" junction_raw {} "$qc_splice" "$pwd6" "$bed"
+  echo "splicing QC analysis for pipe_align-trim ... done !"
+  sleep 2
+fi
+#running for bam pipe_align trimmed files if not skipped
+if [ "$val4" != "trim" ];then
+  if [ ! -d "${wd}/QC_alignment" ];then mkdir "${wd}/QC_alignment";fi
+  qc_align="${wd}/QC_alignment"
+  if [ ! -d "$qc_align/splicing" ];then mkdir "$qc_align/splicing";fi
+  qc_splice="$qc_align/splicing"
+  #QC for splicing analysis it will look for only unique mapped reads as phred is set to 30,default
+  #and the minimun intron length is set to 20 -m as it was the already set as an star argument in pipe_align
+  junction_trim()
+  {
+    tb="$1"
+    qc_splice="$2"
+    pwd6="$3"
+    bed="$4"
+  while read s discard;do
+    #if final output does not exist and input exists then
+    if [ ! -s "$qc_splice/${s}/jSat_table" -a -s "$pwd6/${s}/${s}.out.sort.bam" ];then
+      if [ ! -d "$qc_splice/${s}/" ];then mkdir "$qc_splice/${s}/";fi
+      nice -n 19 junction_annotation.py -i "$pwd6/${s}/${s}.out.sort.bam" -r "$bed" -o "$qc_splice/${s}/s" -m 20
+      nice -n 19 junction_saturation.py -i "$pwd6/${s}/${s}.out.sort.bam" -r "$bed" -o "$qc_splice/${s}/s" -m 20
+      for i in {x,y,z,w};do
+        grep "$i=" "$qc_splice/${s}/s.junctionSaturation_plot.r" |\
+        cut -f2 -d'=' | sed "s|^c(||" | sed "s|)$||" |\
+        sed "s|^|$i,|" >> "$qc_splice/${s}/jSat_table"
+      done
+    fi
+  done < "$tb"
+  }
+  export -f junction_trim
+  #running in parallel
+  cat "$spl" | parallel -j "$t" junction_trim {} "$qc_splice" "$pwd6" "$bed"
+  echo "splicing QC analysis for bam files ... done !"
+  sleep 2
+fi
+#end of the main loop for splicing QC analysis skipping
+fi
+#project coverage analysis
+###############################
+#as it is a time consumming step it will only run for pipe_align-trim files
+#or for pipe_align-raw files if trim steps were skipped
+#running geneBody_coverage if it was not skipped
+if [ "$val10" != "cov" ];then
+  if [ "$val4" != "trim" ];then
+    if [ ! -d "${wd}/QC_alignment" ];then mkdir "${wd}/QC_alignment";fi
+    qc_align="${wd}/QC_alignment"
+    if [ ! -d "$qc_align/coverage" ];then mkdir "$qc_align/coverage";fi
+    cover="$qc_align/coverage"
+    rm -f "${cover}/bam_files.txt"
+    sample_tsv.R "$bed" 0.30 "${cover}/sampled_bed.bed"
+    while read x discard;do
+      #adding bam files only if they are being generated
+      if [ -s "$pwd6/${x}/${x}.out.sort.bam" ];then
+        echo  "$pwd6/${x}/${x}.out.sort.bam" >> "${cover}/bam_files.txt"
+      fi
+    done < "$tb"
+    geneBody_coverage.py -i "${cover}/bam_files.txt" -r "${cover}/sampled_bed.bed" -l 200 -o "${cover}/${project}"
+  elif [ "$val" == "trim" -a "$run" == "star_raw" ];then
+    if [ ! -d "${wd}/QC_alignment_raw" ];then mkdir "${wd}/QC_alignment_raw";fi
+    qc_align="${wd}/QC_alignment_raw"
+    if [ ! -d "$qc_align/cover" ];then mkdir "$qc_align/cover";fi
+    cover="$qc_align/cover"
+    rm -f "${cover}/bam_files.txt"
+    sample_tsv.R "$bed" 0.30 "${cover}/sampled_bed.bed"
+    while read x discard;do
+      #adding bam files only if they are being generated
+      if [ -s "$pwd6/${x}_raw/${x}.out.sort.bam" ];then
+        echo  "$pwd6/${x}_raw/${x}.out.sort.bam" >> "${cover}/bam_files.txt"
+      fi
+    done < "$tb"
+    geneBody_coverage.py -i "${cover}/bam_files.txt" -r "${cover}/sampled_bed.bed" -l 200 -o "${cover}/${project}"
+  fi
+#end of the main loop
+fi
+
+################################################################################
+#transcript building
+################################################################################
+#Scallop transcriptome assembly per sample
+##########################################
+#making a directory for aligments outputs:bigwig files, scallop and taco, fasta transcriptome
+if [ ! -d "$wd/assembly_star" ];then mkdir "$wd/assembly_star";fi
+assembly_star="$wd/assembly_star"
+if [ ! -d "$assembly_star/scallop_built" ];then mkdir "$assembly_star/scallop_built";fi
+scallop="$assembly_star/scallop_built"
+#runnig scallop
+if [ "$val4" != "trim" ];then
+  echo "running scallop for transcriptome assembly from bam files"
+  sleep 2
+  while read x discard;do
+    if [ ! -s "$scallop/$x.gtf" -a -s "$pwd6/${x}/${x}.out.sort.bam" ];then
+      lib_type=$(scallop_lib_type.sh "$pwd6/${x}/${x}.out.sort.bam" "$bed")
+      nice -n 19 scallop -i "$pwd6/${x}/${x}.out.sort.bam" \
+      --library_type "$lib_type" --min_transcript_length_base 200 \
+      --min_mapping_quality 30 --min_splice_bundary_hits 3 \
+      -o "$scallop/$x.gtf"
+    fi
+  done < "$tb"
+  echo "scallop step ... done!"
+fi
+if [ "$val4" == "trim" -o "$run" == "star_raw" ];then
+  echo "running scallop for transcriptome assembly from raw bam files"
+  sleep 2
+  while read x discard;do
+    if [ ! -s "$scallop/${x}_raw.gtf" -a -s "$pwd6/${x}_raw/${x}.out.sort.bam" ];then
+      lib_type=$(scallop_lib_type.sh "$pwd6/${x}_raw/${x}.out.sort.bam" "$bed")
+      echo "runing scallop for sample raw $x"
+      nice -n 19 scallop -i "$pwd6/${x}_raw/${x}.out.sort.bam" \
+      --library_type "$lib_type" --min_transcript_length_base 200 \
+      --min_mapping_quality 30 --min_splice_bundary_hits 3 \
+      -o "$scallop/${x}_raw.gtf"
+    fi
+  done < "$tb"
+    echo "scallop step for raw files... done!"
+fi
+
+#Merging of scallop gtf files by taco and comparing with reference gtf
+######################################################################
+#first directory for output files will be created and variables assigned
+if [ ! -d "$assembly_star/taco_merge" ];then mkdir "$assembly_star/taco_merge";fi
+taco="$assembly_star/taco_merge"
+#adding missing attributes to genomebrowser gtf file from well
+#annotated gtf -gtf2- file
+if [ -s "$gtf2" ];then
+  merge_annotated_gtf.R "$gtf" "$gtf2" "$taco/ref_annotated"
+  gtf="$taco/ref_annotated.gtf"
+fi
+condition=$(cut -f4 "$tb"| uniq)
+##################################
+#if trimmed steps were not skipped
+if [ "$val4" != "trim" ];then
+#Merging gtf files per condition
+################################
+  for i in "$condition";do
+    if [ ! -d "$taco/$i" ];then mkdir "$taco/$i";fi
+    tdc="$taco/$i"
+    rm -f "$tdc/${i}_scallop_group"
+    #adding existing files - if input exists
+    while read x y z w discard; do
+      if [ "$i" == "$w" -a -s "$scallop/$x.gtf" ];then
+        echo "$scallop/$x.gtf" >> "$tdc/${i}_scallop_group"
+      fi
+    done < "$tb"
+    trun="$tdc/run"
+    echo "merging scallop gtf files for condition $i"
+    #if outuput does not exists
+    if [ ! -s "$trun/assembly.gtf" ];then
+      nice -n 19 taco_run "$tdc/${i}_scallop_group" -o "$trun" \
+      -p "$t" --gtf-expr-attr RPKM --filter-min-length 200 --isoform-frac 0.05
+    fi
+    comp="$tdc/compare"
+    if [ -n "$species" ];then
+      echo "comparing merged gtf files of condition $i"
+      nice -n 19 taco_refcomp -o "$comp" -p "$t" --cpat \
+      --cpat-species "$species" --cpat-genome "$genome" \
+      -r "$gtf" -t "$trun/assembly.gtf"
+    else
+      nice -n 19 taco_refcomp -o "$comp" -p "$t" \
+      -r "$gtf" -t "$trun/assembly.gtf"
+    fi
+  done
+#Merging all project-sample gtf files
+#####################################
+  if [ ! -d "$taco/$project" ];then mkdir "$taco/$project";fi
+  tdc="$taco/$project"
+  rm -f "$tdc/tomerge_files"
+  while read x discard;do
+    if [ -s "$scallop/$x.gtf" ];then
+      echo "$scallop/$x.gtf" >> "$tdc/tomerge_files"
+    fi
+  done < "$tb"
+  trun="$tdc/run"
+  echo "merging scallop gtf files for project $project"
+  if [ ! -s "$trun/assembly.gtf" ];then
+    nice -n 19 taco_run "$tdc/tomerge_files" -o "$trun" \
+    -p "$t" --gtf-expr-attr RPKM --filter-min-length 200 --isoform-frac 0.05
+  fi
+  echo "writting the transcriptome down for $project"
+  nice -n 19 bedtools getfasta -fi "$genome" \
+  -fo "$trun/${project}.transcriptoma.fa" -bed "$trun/assembly.bed" \
+  -name -split -s
+  #generating table transcript to genes
+  grep ">" "$trun/${project}.transcriptoma.fa" | sed 's/^.*|//; s/(.*)//' > "$trun/transcripts"
+  grep ">" "$trun/${project}.transcriptoma.fa" | sed 's/>//; s/|.*)//' > "$trun/genes"
+  paste "$trun/transcripts" "$trun/genes" > "$trun/${project}.transcripts_to_genes.tsv"
+  cat "$trun/genes" | sort | unique "$trun/list_genes"
+  mv -f unique "$trun/list_genes" "$trun/genes"
+  #just leaving the transcript taco name in the fasta file
+  sed -i 's/^.*|/>/; s/(.*)//' "$trun/${project}.transcriptoma.fa"
+  #copying the output bed file to the visualization directory
+  if [ ! -d "${pwdp}/assembly_star" ];then mkdir "${pwdp}/assembly_star";fi
+  cp "$trun/assembly.bed" "${pwdp}/assembly_star/${project}_transcriptome.bed" \
+  || echo "can not copy bed file,directory full"
+  comp="$tdc/compare"
+  if [ -n "$species" ];then
+    echo "comparing merged gtf files for project $i"
+    nice -n 19 taco_refcomp -o "$comp" -p "$t" --cpat \
+    --cpat-species "$species" --cpat-genome "$genome" \
+    -r "$gtf" -t "$trun/assembly.gtf"
+  else
+    nice -n 19 taco_refcomp -o "$comp" -p "$t" \
+    -r "$gtf" -t "$trun/assembly.gtf"
+  fi
+fi
+#################################################
+#if raw run was added and trim steps were skiiped
+if [ "$val4" == "trim" -o "$run" == "star_raw" ];then
+  for i in "$condition";do
+    if [ ! -d "$taco/${i}_raw" ];then mkdir "$taco/${i}_raw";fi
+    tdc="$taco/${i}_raw"
+    rm -f "$tdc/${i}_scallop_group"
+    while read x y z w discard; do
+      if [ "$i" == "$w" -a -s "$scallop/${x}_raw.gtf" ];then
+        echo "$scallop/${x}_raw.gtf" >> "$tdc/${i}_scallop_group"
+      fi
+    done < "$tb"
+    trun="$tdc/run"
+    echo "merging scallop gtf files for condition $i"
+    if [ ! -s "$trun/assembly.gtf" ];then
+      nice -n 19 taco_run "$tdc/${i}_scallop_group" -o "$trun" \
+      -p "$t" --gtf-expr-attr RPKM --filter-min-length 200 --isoform-frac 0.05
+    fi
+    comp="$tdc/compare"
+    if [ -n "$species" ];then
+      echo "comparing merged gtf files of condition $i"
+      nice -n 19 taco_refcomp -o "$comp" -p "$t" --cpat \
+      --cpat-species "$species" --cpat-genome "$genome" \
+      -r "$gtf" -t "$trun/assembly.gtf"
+    else
+      nice -n 19 taco_refcomp -o "$comp" -p "$t" \
+      -r "$gtf" -t "$trun/assembly.gtf"
+    fi
+  done
+#Merging all project-sample gtf files
+#####################################
+  if [ ! -d "$taco/${project}_raw" ];then mkdir "$taco/${project}_raw";fi
+  tdc="$taco/${project}_raw"
+  rm -f "$tdc/tomerge_files"
+  while read x discard;do
+    if [ -s "$scallop/${x}_raw.gtf" ];then
+      echo "$scallop/${x}_raw.gtf" >> "$tdc/tomerge_files"
+    fi
+  done < "$tb"
+  trun="$tdc/run"
+  echo "merging raw scallop gtf files for project $project"
+  if [ ! -s "$trun/assembly.gtf" ];then
+  nice -n 19 taco_run "$tdc/tomerge_files" -o "$trun" \
+  -p "$t" --gtf-expr-attr RPKM --filter-min-length 200 --isoform-frac 0.05
+  fi
+  echo "writting the transcriptome down for $project"
+  nice -n 19 bedtools getfasta -fi "$genome" \
+  -fo "$trun/${project}.transcriptoma.fa" -bed "$trun/assembly.bed" \
+  -name -split -s
+  #generating table transcript to genes
+  grep ">" "$trun/${project}.transcriptoma.fa" | sed 's/^.*|//; s/(.*)//' > "$trun/transcripts"
+  grep ">" "$trun/${project}.transcriptoma.fa" | sed 's/>//; s/|.*)//' > "$trun/genes"
+  paste "$trun/transcripts" "$trun/genes" > "$trun/${project}.transcripts_to_genes.tsv"
+  cat "$trun/genes" | sort | unique "$trun/list_genes"
+  mv -f unique "$trun/list_genes" "$trun/genes"
+  #just leaving the transcript taco name in the fasta file
+  sed -i 's/^.*|/>/; s/(.*)//' "$trun/${project}.transcriptoma.fa"
+  #copying the output bed file to the visualization directory
+  if [ ! -d "${pwdp}/assembly_star" ];then mkdir "${pwdp}/assembly_star";fi
+  cp "$trun/assembly.bed" "${pwdp}/assembly_star/${project}_transcriptome.bed" \
+  || echo "can not copy bed file,directory full"
+  comp="$tdc/compare"
+  if [ -n "$species" ];then
+    echo "comparing raw merged gtf files for project $i"
+    nice -n 19 taco_refcomp -o "$comp" -p "$t" --cpat \
+    --cpat-species "$species" --cpat-genome "$genome" \
+    -r "$gtf" -t "$trun/assembly.gtf"
+  else
+    nice -n 19 taco_refcomp -o "$comp" -p "$t" \
+    -r "$gtf" -t "$trun/assembly.gtf"
+  fi
+fi
+################################################################################
+#transcript-based gene counts
+################################################################################
+#making the step main directory
+if [ ! -d "$wd/counts" ];then mkdir "$wd/counts";fi
+counts="$wd/counts"
+#Running kallisto for gene counting
+###################################
+#making a kallisto directory
+if [ ! -d "$counts/kallisto" ];then mkdir "$counts/kallisto";fi
+kallisto="$counts/kallisto"
+#building index
+kallisto index -i "$kallisto/${project}.idx" \
+--make-unique "$trun/${project}.transcriptoma.fa"
+idx="$kallisto/${project}.idx"
+#function for run_info.json transformation to tsv, it takes the file path as
+#input and return the format-transformed table
+j2t () { cat "$1/run_info.json" | grep "[np]_" | sed -n '1, 7 p' |\
+ sed 's/"//g;s/://;s/,//;s/\t//;s/ /\t/' > "$1/run_info.tsv"; }
+export -f j2t
+#kallisto quantification
+if [ "$val4" != "trim" ];then
+  if [ ! -d "$kallisto/raw" ];then mkdir "$kallisto/raw";fi;raw="$kallisto/raw";
+  if [ ! -d "$kallisto/trim" ];then mkdir "$kallisto/trim";fi;trim="$kallisto/trim";
+  while read x y discard;do
+    if [ "$y" == "PAIRED" ];then
+      r1=$(ls "$pwd1"|grep "$x"|sed "s|^|"$pwd1/"|"| head -n 1)
+      r2=$(ls "$pwd1"|grep "$x"|sed "s|^|"$pwd1/"|"| tail -n 1)
+      t1=$(ls "$pwd4"|grep "$x"|sed "s|^|"$pwd4/"|"| head -n 1)
+      t2=$(ls "$pwd4"|grep "$x"|sed "s|^|"$pwd4/"|"| tail -n 1)
+      if [ -s "$t1" -a -s "$t2" ];then
+        if [ ! -d "$trim/$x" ];then mkdir "$trim/$x";fi;otrim="$trim/$x";
+        if [ ! -s "$otrim/run_info.tsv" ];then
+          kallisto quant -i "$idx" -o "$otrim" --bias -b 100 -t "$t" "$t1" "$t2"
+          j2t "$otrim"
+        fi
+      fi
+      if [ -s "$r1" -a -s "$r2" ];then
+        if [ ! -d "$raw/$x" ];then mkdir "$raw/$x";fi;oraw="$raw/$x";
+        if [ ! -s "$oraw/run_info.tsv" ];then
+          kallisto quant -i "$idx" -o "$oraw" --bias -b 100 -t "$t" "$r1" "$r2"
+          j2t "$oraw"
+        fi
+      fi
+    elif [ "$y" == "SINGLE" ];then
+      r1=$(ls "$pwd1"|grep "$x"|sed "s|^|"$pwd1/"|")
+      t1=$(ls "$pwd1"|grep "$x"|sed "s|^|"$pwd1/"|")
+      if [ -s "$t1" ];then
+        if [ ! -d "$trim/$x" ];then mkdir "$trim/$x";fi;otrim="$trim/$x";
+        if [ ! -s "$otrim/run_info.tsv" ];then
+          kallisto quant -i "$idx" --single -l 200 -s 20 --bias -b 100 -t "$t" "$t1"
+        fi
+      fi
+      if [ -s "$r1" ];then
+        if [ ! -d "$raw/$x" ];then mkdir "$raw/$x";fi;oraw="$raw/$x";
+        if [ ! -s "$oraw/run_info.tsv" ];then
+          kallisto quant -i "$idx" --single -l 200 -s 20 --bias -b 100 -t "$t" "$r1"
+        fi
+      fi
+    fi
+  done < "$tb"
+elif [ "$val4" == "trim" ];then
+  if [ ! -d "$kallisto/raw" ];then mkdir "$kallisto/raw";fi;raw="$kallisto/raw";
+  while read x y discard;do
+    if [ "$y" == "PAIRED" ];then
+      r1=$(ls "$pwd1"|grep "$x"|sed "s|^|"$pwd1/"|"| head -n 1)
+      r2=$(ls "$pwd1"|grep "$x"|sed "s|^|"$pwd1/"|"| tail -n 1)
+      if [ -s "$r1" -a -s "$r2" ];then
+        if [ ! -d "$raw/$x" ];then mkdir "$raw/$x";fi;oraw="$raw/$x";
+        if [ ! -s "$oraw/run_info.tsv" ];then
+          kallisto quant -i "$idx" -o "$oraw" --bias -b 100 -t "$t" "$r1" "$r2"
+          j2t "$oraw"
+        fi
+      fi
+    elif [ "$y" == "SINGLE" ];then
+      r1=$(ls "$pwd1"|grep "$x"|sed "s|^|"$pwd1/"|")
+      if [ -s "$r1" ];then
+        if [ ! -d "$raw/$x" ];then mkdir "$raw/$x";fi;oraw="$raw/$x";
+        if [ ! -s "$oraw/run_info.tsv" ];then
+          kallisto quant -i "$idx" --single -l 200 -s 20 --bias -b 100 -t "$t" "$r1"
+        fi
+      fi
+    fi
+  done < "$tb"
+fi
+##############################################################################################################
+#differentail expressed analysis at gene, transcript and exon level based on the newly assembled transcriptome
+##############################################################################################################
+
+exit 0
