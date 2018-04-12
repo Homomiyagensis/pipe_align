@@ -1,4 +1,4 @@
-QC_alignment#!/usr/bin/env bash
+#!/usr/bin/env bash
 set -e
 ################################################################################
                               #pipe_align
